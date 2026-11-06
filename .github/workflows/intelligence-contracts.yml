@@ -11,7 +11,7 @@ permissions:
 jobs:
   contracts:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
         with:
@@ -19,6 +19,6 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22.x
-      # The contract suite uses actual app modules with explicit in-memory
-      # transport/filesystem adapters. It needs no native SDK or service key.
+      # Installed security dependency contracts need no native SDK/service key.
+      - run: npm ci --ignore-scripts --no-audit --no-fund
       - run: npm test

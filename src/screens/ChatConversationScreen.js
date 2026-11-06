@@ -93,7 +93,14 @@ function imageFromDataUrl(value) {
   };
 }
 
-export default function ChatConversationScreen({ navigation, route }) {
+// A different conversation gets different state and teardown, even when the
+// navigator reuses this screen for the same signed-in account. Otherwise a late
+// reply from the previous route could be autosaved under the newly selected ID.
+export default function ChatConversationScreen(props) {
+  return <ChatConversationContent key={props.route.params?.conversationId || props.route.key} {...props} />;
+}
+
+function ChatConversationContent({ navigation, route }) {
   const insets = useSafeAreaInsets();
   const { width: windowWidth, height: windowHeight } = useWindowDimensions();
   const colors = useColors();
@@ -549,15 +556,20 @@ export default function ChatConversationScreen({ navigation, route }) {
         const d = source
           ? await api.imageEdit({
               prompt: text,
+              projectId,
+              messages: requestMessages(next, config.API_BASE),
               sourceUrl: source.url,
               operation: source.operation || undefined,
               size: source.size || undefined,
             }, token, signal)
-          : await api.image({ prompt: text }, token, signal);
+          : await api.chat({
+              model: 'auto', tier: mode, effort, skill: 'image',
+              messages: requestMessages(next, config.API_BASE), lang, projectId, conversationId: convId,
+            }, token, signal);
         if (!currentSession()) return;
         const img = d.images && d.images[0];
         setEditSource(null);
-        setMessages([...next, img ? { role: 'assistant', image: absUrl(img.url), imageId: img.id || null } : { role: 'assistant', content: d.notice || 'No image returned.' }]);
+        setMessages([...next, assistantMessage(d, config.API_BASE)]);
         // Image generation is slow — tell the user it landed.
         if (img) notify(t('notifImageReady'), t('notifImageReadySub'), 'success');
         else notify(t('notifFailed'), d.notice || '', 'warn');

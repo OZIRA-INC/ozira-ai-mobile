@@ -94,6 +94,45 @@ test('direct A→B switch invalidates deferred chat/image/research updates befor
  assert.match(nav,/<AppStack key=\{ownerId\}/);assert.match(screen,/const setMessages = value => \{ if \(currentSession\(\)\)/);
  assert.match(screen,/if \(!currentSession\(\) \|\| !dirtyRef.current\) return/);assert.match(screen,/abortRef.current\?\.abort\(\)/);
 });
+test('same-account conversation navigation tears down actual deferred send handlers before another chat can receive them', async()=>{
+ const screen=await source('src/screens/ChatConversationScreen.js');
+ assert.match(screen,/<ChatConversationContent key=\{props\.route\.params\?\.conversationId \|\| props\.route\.key\}/);
+ const start=screen.indexOf('  async function send('),end=screen.indexOf('\n  return (',start);
+ assert.ok(start>0&&end>start);
+ const implementation=screen.slice(start,end).trim();
+ for(const mode of ['chat','image','research','vision']) {
+   let mounted=true,release;const updates=[],notifications=[],requests=[];
+   const deferred=new Promise(resolve=>release=resolve);
+   const noop=()=>{};
+   const scope={
+     currentSession:()=>mounted,input:'request',attachment:mode==='vision'?{kind:'photo',base64:'AQID',mimeType:'image/png'}:null,
+     research:mode==='research',busy:false,imageMode:mode==='image',messages:[],editIdx:null,editSource:null,
+     setInput:noop,setAttachment:noop,dirtyRef:{current:false},setEditIdx:noop,setMessages:value=>updates.push(value),
+     scrollDown:noop,setBusy:noop,AbortController,abortRef:{current:null},route:{params:{}},isImageRequest:()=>false,
+     imageFromDataUrl:()=>null,setImageMode:noop,token:'same-account',mode:'fast',effort:'quick',lang:'en',projectId:'ventureA',convId:'conversationA',
+     requestMessages:contract.requestMessages,assistantMessage:contract.assistantMessage,config:{API_BASE:base},absUrl:value=>new URL(value,base).href,
+     api:{chat:payload=>{requests.push(payload);return deferred;},image:()=>{throw Error('Unscoped image route must not be used');},imageEdit:()=>deferred,aiResearch:()=>deferred,aiVision:()=>deferred},
+     setEditSource:noop,notify:(...args)=>notifications.push(args),t:value=>value,speakText:noop,
+   };
+   // Execute the actual screen handler, not a recreated completion callback.
+   const send=Function(...Object.keys(scope),'return '+implementation)(...Object.values(scope));
+   const pending=send('Create something',false);assert.equal(updates.length,1);assert.equal(updates[0].at(-1).pending,true);
+   if(mode==='image') {
+     assert.equal(requests[0].projectId,'ventureA');assert.equal(requests[0].conversationId,'conversationA');
+     assert.equal(requests[0].skill,'image');assert.equal(requests[0].messages[0].content,'Create something');
+   }
+   // A keyed conversation remount runs this existing teardown before B owns UI.
+   mounted=false;scope.abortRef.current.abort();
+   release({...response,reply:'PRIVATE A',configured:true,text:'PRIVATE A',images:[{id:'A',url:'/img/a.png'}]});await pending;
+   assert.equal(updates.length,1,mode+' must not render or autosave the old reply in conversation B');
+   assert.equal(notifications.length,0);
+   if(mode==='image') {
+     // The same actual handler also retains composite metadata on normal success.
+     mounted=true;await send('Create something',false);
+     assert.equal(updates.at(-1).at(-1).metadata.webBuild.projectId,'bakery');
+   }
+ }
+});
 const document={id:'doc_test',format:'pdf',mimeType:'application/pdf',fileName:'report.pdf',byteLength:4,downloadUrl:'/api/documents/doc_test'};
 test('document metadata survives save contract; downloads require auth and reject errors without exposing bearer URL',async()=>{
  const normalized=contract.conversationMessage({role:'assistant',content:'Report',metadata:{document}},base);

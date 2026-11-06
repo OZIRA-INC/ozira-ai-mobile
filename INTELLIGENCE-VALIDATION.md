@@ -79,3 +79,43 @@ explicitly treats device headers as display metadata; canonical identity/session
 claims, not client device IDs, grant access. Device/header compatibility does not
 replace server authorization. Regression covers delayed identity initialization,
 one storage read, no second ID, and the original account token.
+
+## Release Gate 2 independent source review
+
+Reviewed PR #2 at `98be9257933942ef32292b926a7f33fed7c47ae8` against
+`ddac2c3940731ff3ed6b084adc88d708633aa3a0`. Two additional source defects were
+corrected after that candidate: same-account conversation changes now remount
+the chat content, aborting and invalidating old callbacks before another
+conversation owns the UI; new image generation uses the shared `/api/chat`
+path with selected project/history and retains composite metadata. Source-image
+edits transmit the same selected scope to the existing edit endpoint. The
+backend candidate must include its corresponding direct-image scope checks.
+
+The regression suite executes the actual screen send handler with deferred
+chat/image/research/vision responses and teardown, verifies no stale update,
+and checks the scoped image request and retained composite result. This is
+offline handler/contract evidence, not rendered React Native/device acceptance.
+
+Native acceptance is **BLOCKED** in this execution environment: `adb`,
+`emulator`, `sdkmanager`, `javac`, `gradle`, `xcodebuild`, `xcrun` and `eas` are
+not installed on PATH. OpenJDK 21 runtime is present, but no Android SDK,
+device/emulator, generated native project, or approved cloud-build binding was
+established. Existing EAS development/preview profiles specify internal APKs;
+their presence is not account authorization or a successful build. No new
+SDK, device infrastructure, cloud build, signing identity or credential was
+created. Installation, launch, native rendering/sharing, background/resume,
+session-expiry cache behavior and cross-device live acceptance remain BLOCKED.
+
+Document generation/download is distinct from input document understanding.
+The existing mobile attachment path reads text; PDF/Office input parsing and
+native document-upload acceptance are not implemented or established here.
+
+Gate 2 dependency stabilization keeps installed Expo54.0.36 and RN0.81.5 unchanged.
+Targeted pinned overrides update vulnerable branches; React Navigation core7.24.0
+removes the query-string/decoder chain and Metro0.83.8 removes image-size without
+an incompatible filename-to-buffer override. Audit now reports0 critical,0 high,
+18 moderate and1 low; lower-severity findings are retained.24 tests pass with real
+installed dependencies. Android/iOS offline JavaScript exports pass, which does
+not establish a native APK/IPA build or device acceptance. XML consumer tests
+verify valid API compatibility; arbitrary invalid element names are not validated
+by the underlying DOM APIs. No blanket security certification is claimed.
