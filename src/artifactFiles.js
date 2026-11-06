@@ -5,7 +5,7 @@ import * as Sharing from 'expo-sharing';
 // the native chooser; it does not load HTML into a WebView or execute scripts.
 export async function shareArtifactFile(name, data, mimeType, current) {
   if (!current()) return;
-  if (!/^[A-Za-z0-9_-]+\.(html|docx|xlsx|pptx|pdf)$/.test(name)) throw new Error('Invalid export filename.');
+  if (!/^[A-Za-z0-9_-]+\.(html|docx|xlsx|pptx|pdf|png|jpg|webp|gif)$/.test(name)) throw new Error('Invalid export filename.');
   if (!await Sharing.isAvailableAsync()) throw new Error('File sharing unavailable.');
   if (!current()) return;
   let file;

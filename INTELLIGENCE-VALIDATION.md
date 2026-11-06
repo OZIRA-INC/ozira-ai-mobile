@@ -54,3 +54,28 @@ react-devtools-core tooling chain. Candidate: 36 findings (0 critical, 16 high,
 dry-run proposed zero mutations; the postcss fix requests an Expo53 major
 downgrade and was rejected. Residual high reachability is not established and
 remains release debt. No force upgrade was used.
+
+Private-image follow-up: generated chat images, thumbnails and library/viewer
+sources attach session headers only after validating `/img` assets and
+canonicalizing approved same-environment aliases onto the configured API origin.
+Foreign origins, other environments, data URLs and non-image paths receive no
+bearer header. Explicit image save/share downloads authenticated bytes with a
+captured account token, redirects disabled, no-store, MIME/size validation and an
+account lease before native export. Temporary export files are removed. Stable
+image URLs remain in saved conversations. Backend access checks/no-store and
+native cache/display behavior require deployed/device acceptance.
+
+Updated validation: 11/11 offline tests passed, including image header snapshots,
+foreign/environment credential exclusion, 401 rejection and display wiring; 56
+source files parsed and diff checks passed.
+
+Device compatibility: image sources include the same persisted `ozira_device_id`
+and platform label used by normal API calls. A shared, deduplicated initializer
+prevents simultaneous callers minting different IDs. The navigator waits for
+initialization; image sources remain closed without an initialized ID. Binary
+image/document downloads reuse that initializer while retaining the account
+credential snapshot from before awaiting storage. Server `authSessions.js`
+explicitly treats device headers as display metadata; canonical identity/session
+claims, not client device IDs, grant access. Device/header compatibility does not
+replace server authorization. Regression covers delayed identity initialization,
+one storage read, no second ID, and the original account token.

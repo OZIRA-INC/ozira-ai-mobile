@@ -74,10 +74,10 @@ test('in-flight previous-account response cannot enter next account cache',async
 });
 test('API request snapshots account token before asynchronous device lookup',async()=>{
  let release,started;const ready=new Promise(resolve=>started=resolve);const calls=[];
- const fixture={documentArtifact:contract.documentArtifact,config:{API_BASE:base},AsyncStorage:{getItem(){started();return new Promise(resolve=>release=resolve);},async setItem(){}},Platform:{OS:'ios'},fetch:async(url,options)=>{calls.push({url,options});return {ok:true,json:async()=>({})};}};
+ const fixture={ownedAssetUrl:contract.ownedAssetUrl,documentArtifact:contract.documentArtifact,config:{API_BASE:base},AsyncStorage:{getItem(){started();return new Promise(resolve=>release=resolve);},async setItem(){}},Platform:{OS:'ios'},fetch:async(url,options)=>{calls.push({url,options});return {ok:true,json:async()=>({})};}};
  const key=`__api_test_${Math.random()}`;globalThis[key]=fixture;
  const code=(await source('src/api.js')).replace(/^import .*;$/gm,'');
- const apiModule=await load(`const {config,AsyncStorage,Platform,fetch,documentArtifact}=globalThis[${JSON.stringify(key)}];\n${code}`);delete globalThis[key];
+ const apiModule=await load(`const {config,AsyncStorage,Platform,fetch,documentArtifact,ownedAssetUrl}=globalThis[${JSON.stringify(key)}];\n${code}`);delete globalThis[key];
  apiModule.setToken('account-A-test-token');const request=apiModule.api.chat({messages:[]});await ready;apiModule.setToken('account-B-test-token');release('device-test');await request;
  assert.equal(calls[0].options.headers.authorization,'Bearer account-A-test-token');
 });
@@ -104,9 +104,9 @@ test('document metadata survives save contract; downloads require auth and rejec
  assert.equal((await f.module.getConversation('docchat')).messages[0].metadata.document.fileName,'report.pdf');
  assert.equal(contract.documentArtifact({...document,downloadUrl:'https://evil.test/file'}),null);
  let status=200;const calls=[];
- const fixture={documentArtifact:contract.documentArtifact,config:{API_BASE:base},AsyncStorage:{},Platform:{},fetch:async(url,options)=>{calls.push({url,options});return {ok:status===200,status,headers:{get:()=>document.mimeType},arrayBuffer:async()=>new Uint8Array([1,2,3,4]).buffer};}};
+ const fixture={ownedAssetUrl:contract.ownedAssetUrl,documentArtifact:contract.documentArtifact,config:{API_BASE:base},AsyncStorage:{async getItem(){return 'existing-device-test';},async setItem(){}},Platform:{OS:'ios'},fetch:async(url,options)=>{calls.push({url,options});return {ok:status===200,status,headers:{get:()=>document.mimeType},arrayBuffer:async()=>new Uint8Array([1,2,3,4]).buffer};}};
  const key=`__doc_test_${Math.random()}`;globalThis[key]=fixture;
- const code=(await source('src/api.js')).replace(/^import .*;$/gm,'');const module=await load(`const {config,AsyncStorage,Platform,fetch,documentArtifact}=globalThis[${JSON.stringify(key)}];\n${code}`);delete globalThis[key];
+ const code=(await source('src/api.js')).replace(/^import .*;$/gm,'');const module=await load(`const {config,AsyncStorage,Platform,fetch,documentArtifact,ownedAssetUrl}=globalThis[${JSON.stringify(key)}];\n${code}`);delete globalThis[key];
  await assert.rejects(module.downloadDocument(document),/Sign in/);
  const downloaded=await module.downloadDocument(document,'test-owner-token');assert.equal(downloaded.bytes.length,4);
  assert.equal(calls[0].url,base+document.downloadUrl);assert.equal(calls[0].options.headers.authorization,'Bearer test-owner-token');assert.equal(calls[0].options.redirect,'error');
@@ -122,4 +122,31 @@ test('private HTML export writes opaque source and removes temporary file; stale
  await module.shareArtifactFile('website.html',html,'text/html',()=>true);assert.equal(events[1],html);assert.equal(events[2].options.mimeType,'text/html');assert.equal(events.at(-1),'delete');
  events.length=0;await module.shareArtifactFile('website.html',html,'text/html',()=>false);assert.deepEqual(events,[]);
  fail=true;await assert.rejects(module.shareArtifactFile('report.pdf',new Uint8Array([1]),'application/pdf',()=>true),/chooser failed/);assert.equal(events.at(-1),'delete');
+});
+test('private generated images use only configured gateway bearer headers, snapshot account and reject 401',async()=>{
+ let status=200,release;const calls=[];
+ const fixture={ownedAssetUrl:contract.ownedAssetUrl,documentArtifact:contract.documentArtifact,config:{API_BASE:base},AsyncStorage:{async getItem(){return 'existing-device-test';},async setItem(){}},Platform:{OS:'ios'},fetch:async(url,options)=>{calls.push({url,options});if(release===undefined)await new Promise(resolve=>release=resolve);return {ok:status===200,status,headers:{get:()=> 'image/png'},arrayBuffer:async()=>new Uint8Array([1,2,3]).buffer};}};
+ const key=`__private_image_test_${Math.random()}`;globalThis[key]=fixture;
+ const code=(await source('src/api.js')).replace(/^import .*;$/gm,'');const module=await load(`const {config,AsyncStorage,Platform,fetch,documentArtifact,ownedAssetUrl}=globalThis[${JSON.stringify(key)}];\n${code}`);delete globalThis[key];
+ module.setToken('owner-A-test');assert.equal(module.generatedImageSource('/img/private.png').uri,undefined);
+ await module.prepareDeviceIdentity();const sourceA=module.generatedImageSource('/img/private.png');assert.equal(sourceA.headers.authorization,'Bearer owner-A-test');assert.equal(sourceA.uri,base+'/img/private.png');assert.equal(sourceA.cache,'reload');assert.equal(sourceA.headers['x-ozira-device-id'],'existing-device-test');assert.match(sourceA.headers['x-ozira-device-label'],/iPhone/);
+ for(const url of ['https://foreign.test/img/a.png','https://staging.example/img/a.png','data:image/png;base64,AQID','/api/profile'])assert.equal(module.generatedImageSource(url).headers,undefined);
+ const alias=module.generatedImageSource('https://www.ozira.et/img/private.png');assert.equal(new URL(alias.uri).origin,new URL(base).origin);
+ const pending=module.downloadGeneratedImage('/img/private.png');module.setToken('owner-B-test');await Promise.resolve();release();const result=await pending;assert.equal(result.mimeType,'image/png');assert.equal(calls[0].options.headers.authorization,'Bearer owner-A-test');assert.equal(calls[0].options.redirect,'error');assert.equal(calls[0].options.cache,'no-store');
+ assert.equal(module.generatedImageSource('/img/private.png').headers.authorization,'Bearer owner-B-test');
+ await assert.rejects(module.downloadGeneratedImage('https://foreign.test/img/a.png'),/outside/);assert.equal(calls.length,1);
+ status=401;await assert.rejects(module.downloadGeneratedImage('/img/private.png'),/401/);
+ const screen=await source('src/screens/ChatConversationScreen.js'),library=await source('src/screens/LibraryScreen.js');
+ assert.match(screen,/source=\{generatedImageSource\(viewerImage.url, token\)\}/);assert.match(library,/source=\{generatedImageSource\(img.url, token\)\}/);
+});
+test('image download waits for the existing shared device identity while retaining original account token',async()=>{
+ let release,reads=0,writes=0;const calls=[];
+ const fixture={ownedAssetUrl:contract.ownedAssetUrl,documentArtifact:contract.documentArtifact,config:{API_BASE:base},AsyncStorage:{getItem(){reads++;return new Promise(resolve=>release=resolve);},async setItem(){writes++;}},Platform:{OS:'android'},fetch:async(url,options)=>{calls.push({url,options});return {ok:true,headers:{get:()=> 'image/png'},arrayBuffer:async()=>new Uint8Array([1]).buffer};}};
+ const key=`__image_device_test_${Math.random()}`;globalThis[key]=fixture;const code=(await source('src/api.js')).replace(/^import .*;$/gm,'');
+ const module=await load(`const {config,AsyncStorage,Platform,fetch,documentArtifact,ownedAssetUrl}=globalThis[${JSON.stringify(key)}];\n${code}`);delete globalThis[key];
+ module.setToken('before-device-lookup');const pending=module.downloadGeneratedImage('/img/private.png');const sameInit=module.prepareDeviceIdentity();
+ module.setToken('after-device-lookup');assert.equal(module.generatedImageSource('/img/private.png').uri,undefined);assert.equal(calls.length,0);release('persisted-device-identity');await Promise.all([pending,sameInit]);
+ assert.equal(reads,1);assert.equal(writes,0);assert.equal(calls[0].options.headers.authorization,'Bearer before-device-lookup');assert.equal(calls[0].options.headers['x-ozira-device-id'],'persisted-device-identity');assert.match(calls[0].options.headers['x-ozira-device-label'],/Android/);
+ assert.equal(module.generatedImageSource('/img/private.png').headers.authorization,'Bearer after-device-lookup');
+ const nav=await source('src/navigation/RootNavigator.js');assert.match(nav,/if \(loading \|\| !deviceReady\)/);assert.match(nav,/prepareDeviceIdentity\(\).then/);
 });

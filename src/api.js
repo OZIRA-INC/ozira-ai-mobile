@@ -1,20 +1,27 @@
 import { config } from './config';
-import { documentArtifact } from './conversationContract';
+import { documentArtifact, ownedAssetUrl } from './conversationContract';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Platform } from 'react-native';
 
 let authToken = null;
 export function setToken(t) { authToken = t; }
 let deviceId = null;
+let deviceInit = null;
 async function getDeviceId() {
   if (deviceId) return deviceId;
-  deviceId = await AsyncStorage.getItem('ozira_device_id');
-  if (!deviceId) {
-    deviceId = 'm_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 18);
-    await AsyncStorage.setItem('ozira_device_id', deviceId);
-  }
-  return deviceId;
+  if (!deviceInit) deviceInit = (async () => {
+    let existing = await AsyncStorage.getItem('ozira_device_id');
+    if (!existing) {
+      existing = 'm_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 18);
+      await AsyncStorage.setItem('ozira_device_id', existing);
+    }
+    deviceId = existing;
+    return existing;
+  })().finally(() => { deviceInit = null; });
+  return deviceInit;
 }
+export const prepareDeviceIdentity = () => getDeviceId();
+const deviceLabel = () => 'OZIRA Mobile · ' + (Platform.OS === 'ios' ? 'iPhone/iPad' : 'Android');
 
 // The app language, mirrored here so voice calls can carry it without every
 // caller threading it through. Amharic/Afaan Oromo route to the native Addis AI
@@ -30,7 +37,7 @@ async function req(path, { method, body, token, signal } = {}) {
     headers: {
       'content-type': 'application/json',
       'x-ozira-device-id': sessionDeviceId,
-      'x-ozira-device-label': 'OZIRA Mobile · ' + (Platform.OS === 'ios' ? 'iPhone/iPad' : 'Android'),
+      'x-ozira-device-label': deviceLabel(),
       ...(requestToken ? { authorization: 'Bearer ' + requestToken } : {}),
     },
     body: body ? JSON.stringify(body) : undefined,
@@ -55,7 +62,7 @@ async function realtimeSdp(sdp, lang, token, signal) {
       headers: {
         'content-type': 'application/sdp',
         'x-ozira-device-id': sessionDeviceId,
-        'x-ozira-device-label': 'OZIRA Mobile · ' + (Platform.OS === 'ios' ? 'iPhone/iPad' : 'Android'),
+        'x-ozira-device-label': deviceLabel(),
         ...(requestToken ? { authorization: 'Bearer ' + requestToken } : {}),
       },
       body: sdp,
@@ -166,11 +173,40 @@ export async function downloadDocument(value, token, signal) {
   const artifact = documentArtifact(value);
   const requestToken = token || authToken;
   if (!artifact || !requestToken) throw new Error('Sign in to download this document.');
-  const response = await fetch(config.API_BASE + artifact.downloadUrl, { headers: { authorization: 'Bearer ' + requestToken }, signal, redirect: 'error' });
+  const sessionDeviceId = await getDeviceId();
+  const response = await fetch(config.API_BASE + artifact.downloadUrl, { headers: { authorization: 'Bearer ' + requestToken, 'x-ozira-device-id': sessionDeviceId, 'x-ozira-device-label': deviceLabel() }, signal, redirect: 'error' });
   if (!response.ok) throw new Error('Document download failed (' + response.status + ').');
   const mime = (response.headers.get('content-type') || '').split(';')[0];
   if (mime !== artifact.mimeType) throw new Error('Unexpected document type.');
   const bytes = new Uint8Array(await response.arrayBuffer());
   if (bytes.length !== artifact.byteLength || bytes.length > 1048576) throw new Error('Unexpected document size.');
   return { artifact, bytes };
+}
+
+// Native image loading and explicit exports share one credential boundary.
+// Approved environment aliases are canonicalized to the configured gateway;
+// the bearer header is never attached to a foreign origin or non-image path.
+export function generatedImageSource(value, token) {
+  const owned = ownedAssetUrl(value, config.API_BASE);
+  if (!owned) return { uri: value };
+  const uri = new URL(new URL(owned).pathname, config.API_BASE).href;
+  const requestToken = token === undefined ? authToken : token;
+  // Synchronous Image sources cannot await storage: remain closed until the
+  // navigator's approved initialization completes. Never mint another ID.
+  if (!deviceId) return { uri: undefined };
+  return { uri, cache: 'reload', headers: { 'x-ozira-device-id': deviceId, 'x-ozira-device-label': deviceLabel(), ...(requestToken ? { authorization: 'Bearer ' + requestToken } : {}) } };
+}
+export async function downloadGeneratedImage(value, token, signal) {
+  if (!ownedAssetUrl(value, config.API_BASE)) throw new Error('Image is outside the configured environment.');
+  const requestToken = token || authToken;
+  await getDeviceId();
+  const source = generatedImageSource(value, requestToken);
+  const response = await fetch(source.uri, { headers: source.headers || {}, signal, redirect: 'error', cache: 'no-store' });
+  if (!response.ok) throw new Error('Image download failed (' + response.status + ').');
+  const mime = (response.headers.get('content-type') || '').split(';')[0];
+  const extension = { 'image/png': 'png', 'image/jpeg': 'jpg', 'image/webp': 'webp', 'image/gif': 'gif' }[mime];
+  if (!extension) throw new Error('Unexpected image type.');
+  const bytes = new Uint8Array(await response.arrayBuffer());
+  if (!bytes.length || bytes.length > 20 * 1024 * 1024) throw new Error('Unexpected image size.');
+  return { bytes, mimeType: mime, fileName: 'ozira-image.' + extension };
 }

@@ -11,10 +11,11 @@ import { useUI } from '../context/UIContext';
 import { useLang } from '../context/LanguageContext';
 import { rtlText, rtlRow, rtlIcon } from '../i18n';
 import { useNotify } from '../context/NotifyContext';
-import { api, absUrl } from '../api';
+import { api, absUrl, generatedImageSource, downloadGeneratedImage } from '../api';
 import Markdown from '../components/Markdown';
 import WebsiteArtifact from '../components/WebsiteArtifact';
 import DocumentArtifact from '../components/DocumentArtifact';
+import { shareArtifactFile } from '../artifactFiles';
 import { config } from '../config';
 import { conversationMessage, assistantMessage, requestMessages, projectReference } from '../conversationContract';
 import * as ImagePicker from 'expo-image-picker';
@@ -370,7 +371,9 @@ export default function ChatConversationScreen({ navigation, route }) {
   }
   async function shareGeneratedImage(uri) {
     if (!uri) return;
-    try { await Share.share({ message: uri, url: uri, title: 'OZIRA AI image' }); } catch (_) {}
+    const current = conversationSessionLease();
+    try { const image = await downloadGeneratedImage(uri, token); if (current()) await shareArtifactFile(image.fileName, image.bytes, image.mimeType, current); }
+    catch (error) { if (current()) Alert.alert('Image export', error.message); }
   }
   function beginImageEdit(image, prompt = '', options = {}) {
     if (!image?.url) return;
@@ -405,16 +408,14 @@ export default function ChatConversationScreen({ navigation, route }) {
     setSavingImage(true);
     setImageSaved(false);
     try {
-      const clean = uri.split('?')[0].toLowerCase();
-      const ext = clean.endsWith('.webp') ? 'webp'
-        : clean.endsWith('.gif') ? 'gif'
-          : (clean.endsWith('.jpg') || clean.endsWith('.jpeg')) ? 'jpg' : 'png';
-      const destination = new File(Paths.cache, `ozira-image-${Date.now()}.${ext}`);
-      const downloaded = await File.downloadFileAsync(uri, destination, { idempotent: true });
-      // Saving an app-created file does not require broad photo-library read
-      // permission on modern Android or in Expo Go. Requesting it first can be
-      // rejected before saveToLibraryAsync gets a chance to write the image.
-      await MediaLibrary.saveToLibraryAsync(downloaded.uri);
+      const current = conversationSessionLease();
+      const image = await downloadGeneratedImage(uri, token);
+      if (!current()) return;
+      const destination = new File(Paths.cache, `${Date.now()}-${image.fileName}`);
+      destination.create(); destination.write(image.bytes);
+      try { await MediaLibrary.saveToLibraryAsync(destination.uri); }
+      finally { try { destination.delete(); } catch (_) {} }
+      if (!current()) return;
       setImageSaved(true);
       notify(t('notifSaved'), '', 'success');
     } catch (e) {
@@ -696,10 +697,10 @@ export default function ChatConversationScreen({ navigation, route }) {
         {messages.map((m, i) => (
           <View key={i} style={[styles.bubble, m.role === 'user' ? styles.user : styles.ai]}>
             {m.role === 'assistant' && !m.pending && <Text style={styles.who}>{m.image ? 'Image' : 'OZIRA'}</Text>}
-            {m.thumb ? <Image source={{ uri: m.thumb }} style={styles.thumb} /> : null}
+            {m.thumb ? <Image source={generatedImageSource(m.thumb, token)} style={styles.thumb} /> : null}
             {m.image ? (
               <Pressable onPress={() => setViewerImage({ url: m.image, id: m.imageId, prompt: m.content, index: i })} accessibilityRole="button" accessibilityLabel="Open generated image">
-                <Image source={{ uri: m.image }} style={styles.image} resizeMode="cover" />
+                <Image source={generatedImageSource(m.image, token)} style={styles.image} resizeMode="cover" />
                 {m.content ? <Markdown text={m.content} colors={colors} style={[styles.msgTxt, rtlText(rtl)]} /> : null}
               </Pressable>
             ) : m.pending ? (
@@ -953,7 +954,7 @@ export default function ChatConversationScreen({ navigation, route }) {
             </View>
           </View>
           <View style={styles.imageViewerBody}>
-            {!!viewerImage?.url && <Image source={{ uri: viewerImage.url }} style={styles.imageViewerImage} resizeMode="contain" />}
+            {!!viewerImage?.url && <Image source={generatedImageSource(viewerImage.url, token)} style={styles.imageViewerImage} resizeMode="contain" />}
             {imageSaved && (
               <View pointerEvents="none" style={styles.viewerSavedBadge}>
                 <Ionicons name="checkmark-circle" size={22} color="#FFFFFF" />

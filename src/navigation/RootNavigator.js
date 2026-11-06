@@ -5,6 +5,7 @@ import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { colors } from '../theme';
 import { useColors } from '../context/ThemeContext';
 import { useAuth } from '../context/AuthContext';
+import { prepareDeviceIdentity } from '../api';
 import { useUI } from '../context/UIContext';
 import Sidebar from '../components/Sidebar';
 import { navigate } from './navigationRef';
@@ -90,7 +91,13 @@ function AppStack() {
 
 export default function RootNavigator() {
   const { token, ownerId, loading } = useAuth();
-  if (loading) {
+  const [deviceReady, setDeviceReady] = useState(false);
+  useEffect(() => {
+    let active = true;
+    prepareDeviceIdentity().then(() => { if (active) setDeviceReady(true); }).catch(() => {});
+    return () => { active = false; };
+  }, []);
+  if (loading || !deviceReady) {
     return (
       <View style={{ flex: 1, backgroundColor: colors.bg, alignItems: 'center', justifyContent: 'center' }}>
         <ActivityIndicator color={colors.primary} size="large" />
