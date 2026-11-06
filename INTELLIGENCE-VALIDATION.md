@@ -119,3 +119,21 @@ installed dependencies. Android/iOS offline JavaScript exports pass, which does
 not establish a native APK/IPA build or device acceptance. XML consumer tests
 verify valid API compatibility; arbitrary invalid element names are not validated
 by the underlying DOM APIs. No blanket security certification is claimed.
+
+Gate3: the exact emotional statement follows ordinary chat (explicit Research
+mode remains separate); source accuracy flags are not accepted as proof.
+Delayed text-to-speech provider/audio-mode/file callbacks now use the existing
+account lease plus playback cancellation epoch so prior-account audio cannot
+start after stop/navigation/account switch.30 offline tests pass, including the
+actual TTS module at delayed boundaries. Actual native speakers/permissions and
+background/resume remain unverified.
+
+Pinned compatible consumer updates for glob14.0.4, minimatch11.0.5 and uuid11.1.1
+remove all remaining moderate findings while Expo54.0.36/RN0.81.5 remain unchanged.
+Fresh audit:0 critical/high/moderate,13 low package rows all inherited from one
+unfixed deepmerge4.3.1 leaf (GHSA-gcqx-w48m-w2h4). Its returned-object prototype
+poisoning was reproduced; it is retained as explicit build-configuration risk,
+not suppressed or declared unreachable. Native/config regression review and
+release-owner risk disposition remain required. Fresh lockfile installation,
+installed consumer contracts and offline Android/iOS JavaScript exports passed;
+these are not native installation or device acceptance.

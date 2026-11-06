@@ -51,9 +51,10 @@ test('both XML/plist consumers round-trip build configuration with patched branc
   // constrain build configuration names. This checks compatibility, not XML hardening.
  }
 });
-test('all three brace-expansion branches retain minimatch behavior and bound nested adversarial patterns',()=>{
+test('installed brace-expansion branches retain minimatch behavior and bound nested adversarial patterns',()=>{
  const candidates=Object.keys(lock).filter(path=>/node_modules\/brace-expansion$/.test(path));
- assert.equal(candidates.length,4);
+ assert.ok(candidates.length >= 2);
+ assert.ok(candidates.every(path=>['1.1.21','2.1.7','5.0.12'].includes(lock[path].version)));
  for(const path of candidates){const module=require(join(process.cwd(),path));const expand=typeof module==='function'?module:module.expand;assert.deepEqual(expand('a{b,c}d'),['abd','acd']);}
  // Child timeout prevents a regression from hanging the complete test process.
  for(const path of candidates)execFileSync(process.execPath,['-e',`const m=require(${JSON.stringify(join(process.cwd(),path))});const f=typeof m==='function'?m:m.expand;try{f('{'.repeat(300)+'a,b'+'}'.repeat(300))}catch(e){if(!(e instanceof RangeError)&&!(/max|limit|depth/i.test(e.message)))throw e}`],{timeout:3000});
@@ -101,4 +102,31 @@ test('compression middleware retains gzip response behavior with isolated stream
  const res=new Response();res.setHeader('Content-Type','text/plain');const finished=new Promise((resolve,reject)=>res.on('finish',resolve).on('error',reject));
  require('compression')({threshold:0})(req,res,()=>{res.writeHead(200);res.end('bakery '.repeat(300));});await finished;
  assert.equal(res.getHeader('Content-Encoding'),'gzip');assert.equal(gunzipSync(Buffer.concat(chunks)).toString(),'bakery '.repeat(300));
+});
+test('Gate3 glob cancellation stops traversal and Expo glob consumers preserve native path discovery',async()=>{
+ for(const [path,pkg] of Object.entries(lock))if(/node_modules\/glob$/.test(path)&&Number(pkg.version.split('.')[0])>=9)assert.equal(pkg.version,'14.0.4');
+ const fs=require('node:fs'),globRequire=from('@expo/config'),glob=globRequire('glob');
+ assert.equal(require('uuid/package.json').version,'11.1.1');
+ const dir=await mkdtemp(join(tmpdir(),'ozira-glob-'));
+ try {
+  await require('node:fs/promises').mkdir(join(dir,'ios','Bakery'),{recursive:true});await writeFile(join(dir,'ios','Bakery','AppDelegate.swift'),'fixture');
+  assert.deepEqual(glob.globSync('ios/*/AppDelegate.@(m|mm|swift)',{cwd:dir}),['ios/Bakery/AppDelegate.swift']);
+  const controller=new AbortController();let reads=0;
+  const instrumented={...fs,readdir(path,options,callback){reads++;fs.readdir(path,options,(error,entries)=>{controller.abort(Error('fixture-abort'));callback(error,entries);});}};
+  await assert.rejects(glob.glob('**/*',{cwd:dir,signal:controller.signal,fs:instrumented}),/fixture-abort/);
+  for(let tick=0;tick<5;tick++)await new Promise(resolve=>setImmediate(resolve));assert.equal(reads,1,'aborted traversal must not descend into child directories');
+  const config=require('@expo/config').getConfig(process.cwd(),{skipSDKVersionRequirement:true,skipPlugins:true});assert.equal(config.exp.name,'OZIRA AI');
+ }finally{await rm(dir,{recursive:true,force:true});}
+});
+test('Gate3 minimatch branches preserve CLI matching and bound optimization amplification',()=>{
+ for(const [path,pkg] of Object.entries(lock))if(/node_modules\/minimatch$/.test(path)&&Number(pkg.version.split('.')[0])>=7)assert.equal(pkg.version,'11.0.5');
+ for(const consumer of ['expo/node_modules/@expo/cli','@expo/config']){
+  const minimatch=from(consumer)('minimatch');assert.equal(minimatch.minimatch('src/chat.js','src/*.{js,ts}'),true);assert.equal(minimatch.minimatch('secret.txt','src/**'),false);
+ }
+ execFileSync(process.execPath,['-e',`const {Minimatch}=require('minimatch');try{new Minimatch('**/../'.repeat(30)+'a',{optimizationLevel:2})}catch(e){if(!(e instanceof RangeError)&&!(/max|limit|globparts/i.test(e.message)))throw e}`],{cwd:process.cwd(),timeout:3000});
+});
+test('Gate3 patched UUID remains compatible with Xcode project IDs and rejects truncated name UUID output',()=>{
+ const uuid=require('uuid'),xcode=require('xcode');const project=xcode.project('fixture.pbxproj');project.hash={project:{objects:{}}};
+ const id=project.generateUuid();assert.match(id,/^[A-F0-9]{24}$/);assert.equal(uuid.validate(uuid.v4()),true);
+ assert.throws(()=>uuid.v5('fixture',uuid.v5.DNS,new Uint8Array(8),4),RangeError);
 });

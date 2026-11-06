@@ -189,3 +189,21 @@ test('image download waits for the existing shared device identity while retaini
  assert.equal(module.generatedImageSource('/img/private.png').headers.authorization,'Bearer after-device-lookup');
  const nav=await source('src/navigation/RootNavigator.js');assert.match(nav,/if \(loading \|\| !deviceReady\)/);assert.match(nav,/prepareDeviceIdentity\(\).then/);
 });
+test('B10 mobile emotional statement stays ordinary chat and never invents source verification',async()=>{
+ const screen=await source('src/screens/ChatConversationScreen.js');
+ const start=screen.indexOf('  async function send('),end=screen.indexOf('\n  return (',start);
+ const detectorStart=screen.indexOf('function isImageRequest('),detectorEnd=screen.indexOf('\nfunction imageFromDataUrl(',detectorStart);
+ const isImageRequest=Function('return '+screen.slice(detectorStart,detectorEnd))();
+ const requests=[],researchCalls=[],updates=[];const noop=()=>{};
+ const input='So I can say that being alone without partner is so difficult right now.';
+ const scope={currentSession:()=>true,input,attachment:null,research:false,busy:false,imageMode:false,messages:[],editIdx:null,editSource:null,
+ setInput:noop,setAttachment:noop,dirtyRef:{current:false},setEditIdx:noop,setMessages:value=>updates.push(value),scrollDown:noop,setBusy:noop,
+ AbortController,abortRef:{current:null},route:{params:{}},isImageRequest,imageFromDataUrl:()=>null,setImageMode:noop,token:'fixture-account',
+ mode:'fast',effort:'quick',lang:'en',projectId:null,convId:'conversationB10',requestMessages:contract.requestMessages,assistantMessage:contract.assistantMessage,
+ config:{API_BASE:base},absUrl:value=>new URL(value,base).href,api:{chat:async payload=>{requests.push(payload);return {reply:'That sounds difficult.',metadata:{verified:true,sources:[{title:'Retrieved page',url:'https://example.org/research',verified:true}]}};},aiResearch:async text=>researchCalls.push(text)},
+ setEditSource:noop,notify:noop,t:value=>value,speakText:noop};
+ const send=Function(...Object.keys(scope),'return '+screen.slice(start,end).trim())(...Object.values(scope));await send(input,false);
+ assert.equal(requests.length,1);assert.equal(requests[0].messages[0].content,input);assert.deepEqual(researchCalls,[]);
+ const reply=updates.at(-1).at(-1);assert.equal(reply.content,'That sounds difficult.');assert.equal(reply.metadata.verified,undefined);assert.equal(reply.metadata.sources[0].verified,undefined);
+ assert.doesNotMatch(screen,/Verified|Serper/); // There is no generic source-accuracy badge on this surface.
+});

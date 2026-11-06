@@ -479,11 +479,13 @@ function ChatConversationContent({ navigation, route }) {
     setAssistantMenu({ index: i, message: m, pageX, pageY });
   }
   async function onSpeak(i, m) {
+    if (!currentSession()) return;
     // Tapping the speaker of the message that's playing/loading stops it.
     if (speakingIdx === i || speakBusy === i) { stopSpeaking(); setSpeakingIdx(null); setSpeakBusy(null); return; }
     stopSpeaking(); setSpeakingIdx(null);
     setSpeakBusy(i);
-    const res = await speakText(typeof m.content === 'string' ? m.content : '', token, () => setSpeakingIdx(null));
+    const res = await speakText(typeof m.content === 'string' ? m.content : '', token, () => { if (currentSession()) setSpeakingIdx(null); });
+    if (!currentSession() || res?.cancelled) return;
     setSpeakBusy(null);
     if (res && res.ok) setSpeakingIdx(i);
     else Alert.alert('Voice', (res && res.message) || 'Could not play audio.');
@@ -583,7 +585,7 @@ function ChatConversationContent({ navigation, route }) {
         // never be sent to TTS, especially for voice-originated requests.
         if (fromVoice && body) {
           const spoken = await speakText(body, token);
-          if (!spoken?.ok) notify(t('notifFailed'), spoken?.error || 'Voice playback could not start.', 'warn');
+          if (currentSession() && !spoken?.ok && !spoken?.cancelled) notify(t('notifFailed'), spoken?.error || 'Voice playback could not start.', 'warn');
         }
       } else if (visionImage) {
         const history = next.map((m, i) => ({ role: m.role, content: i === next.length - 1 ? (text || 'What is in this image?') : (typeof m.content === 'string' ? m.content : '') }));
@@ -604,7 +606,7 @@ function ChatConversationContent({ navigation, route }) {
         setMessages([...next, assistantMessage(d, config.API_BASE)]);
         if (fromVoice && d.reply) {
           const spoken = await speakText(d.reply, token);
-          if (!spoken?.ok) notify(t('notifFailed'), spoken?.message || 'Could not play the spoken reply.', 'error');
+          if (currentSession() && !spoken?.ok && !spoken?.cancelled) notify(t('notifFailed'), spoken?.message || 'Could not play the spoken reply.', 'error');
         }
       }
     } catch (e) {
