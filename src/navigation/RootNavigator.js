@@ -89,7 +89,7 @@ function AppStack() {
 }
 
 export default function RootNavigator() {
-  const { token, loading } = useAuth();
+  const { token, ownerId, loading } = useAuth();
   if (loading) {
     return (
       <View style={{ flex: 1, backgroundColor: colors.bg, alignItems: 'center', justifyContent: 'center' }}>
@@ -97,5 +97,5 @@ export default function RootNavigator() {
       </View>
     );
   }
-  return token ? <AppStack /> : <AuthScreen />;
+  return token && ownerId ? <AppStack key={ownerId} /> : <AuthScreen />;
 }

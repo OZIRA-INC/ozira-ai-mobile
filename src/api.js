@@ -1,4 +1,5 @@
 import { config } from './config';
+import { documentArtifact } from './conversationContract';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Platform } from 'react-native';
 
@@ -22,6 +23,7 @@ let currentLang = 'en';
 export function setApiLang(l) { if (l) currentLang = l; }
 
 async function req(path, { method, body, token, signal } = {}) {
+  const requestToken = token || authToken; // capture before an account can switch during device lookup
   const sessionDeviceId = await getDeviceId();
   const res = await fetch(config.API_BASE + path, {
     method: method || (body ? 'POST' : 'GET'),
@@ -29,7 +31,7 @@ async function req(path, { method, body, token, signal } = {}) {
       'content-type': 'application/json',
       'x-ozira-device-id': sessionDeviceId,
       'x-ozira-device-label': 'OZIRA Mobile · ' + (Platform.OS === 'ios' ? 'iPhone/iPad' : 'Android'),
-      ...((token || authToken) ? { authorization: 'Bearer ' + (token || authToken) } : {}),
+      ...(requestToken ? { authorization: 'Bearer ' + requestToken } : {}),
     },
     body: body ? JSON.stringify(body) : undefined,
     signal,
@@ -44,6 +46,7 @@ async function req(path, { method, body, token, signal } = {}) {
 }
 
 async function realtimeSdp(sdp, lang, token, signal) {
+  const requestToken = token || authToken;
   const sessionDeviceId = await getDeviceId();
   const res = await fetch(
     config.API_BASE + '/api/ai/realtime?ground=1&lang=' + encodeURIComponent(lang || currentLang || 'en'),
@@ -53,7 +56,7 @@ async function realtimeSdp(sdp, lang, token, signal) {
         'content-type': 'application/sdp',
         'x-ozira-device-id': sessionDeviceId,
         'x-ozira-device-label': 'OZIRA Mobile · ' + (Platform.OS === 'ios' ? 'iPhone/iPad' : 'Android'),
-        ...((token || authToken) ? { authorization: 'Bearer ' + (token || authToken) } : {}),
+        ...(requestToken ? { authorization: 'Bearer ' + requestToken } : {}),
       },
       body: sdp,
       signal,
@@ -157,3 +160,17 @@ function requestId() { return 'm_' + Date.now().toString(36) + '_' + Math.random
 // Manual memories are user statements made in the Memory screen; the backend
 // requires a non-empty source conversation/message pair for every write.
 function memoryEvidence() { return { sourceConversationId: 'mobile-memory-screen', sourceMessageId: requestId() }; }
+
+// Authenticated binary download, never place bearer tokens in browser URLs.
+export async function downloadDocument(value, token, signal) {
+  const artifact = documentArtifact(value);
+  const requestToken = token || authToken;
+  if (!artifact || !requestToken) throw new Error('Sign in to download this document.');
+  const response = await fetch(config.API_BASE + artifact.downloadUrl, { headers: { authorization: 'Bearer ' + requestToken }, signal, redirect: 'error' });
+  if (!response.ok) throw new Error('Document download failed (' + response.status + ').');
+  const mime = (response.headers.get('content-type') || '').split(';')[0];
+  if (mime !== artifact.mimeType) throw new Error('Unexpected document type.');
+  const bytes = new Uint8Array(await response.arrayBuffer());
+  if (bytes.length !== artifact.byteLength || bytes.length > 1048576) throw new Error('Unexpected document size.');
+  return { artifact, bytes };
+}

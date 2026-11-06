@@ -13,13 +13,17 @@ import { rtlText, rtlRow, rtlIcon } from '../i18n';
 import { useNotify } from '../context/NotifyContext';
 import { api, absUrl } from '../api';
 import Markdown from '../components/Markdown';
+import WebsiteArtifact from '../components/WebsiteArtifact';
+import DocumentArtifact from '../components/DocumentArtifact';
+import { config } from '../config';
+import { conversationMessage, assistantMessage, requestMessages, projectReference } from '../conversationContract';
 import * as ImagePicker from 'expo-image-picker';
 import * as DocumentPicker from 'expo-document-picker';
 import { File, Paths } from 'expo-file-system';
 import * as MediaLibrary from 'expo-media-library';
 import { useAudioRecorder, RecordingPresets, requestRecordingPermissionsAsync, setAudioModeAsync } from 'expo-audio';
 import { ensurePrepared, finalizeRecording } from '../audioSession';
-import { getCachedConversation, getConversation, saveConversation, deleteConversation, setConversationMeta, setConversationFolder, listFolders, newId } from '../localStore';
+import { getCachedConversation, getConversation, saveConversation, deleteConversation, setConversationMeta, setConversationFolder, listFolders, newId, conversationSessionLease } from '../localStore';
 import Logo from '../components/Logo';
 import FlagMenu from '../components/FlagMenu';
 import VoiceOverlay from '../components/VoiceOverlay';
@@ -105,7 +109,14 @@ export default function ChatConversationScreen({ navigation, route }) {
   const greetWord = (() => { const h = new Date().getHours(); return h < 12 ? t('morning') : h < 18 ? t('afternoon') : t('evening'); })();
   const scrollRef = useRef(null);
   const inputRef = useRef(null);
-  const [messages, setMessages] = useState([]);
+  const [messages, updateMessages] = useState([]);
+  const sessionLease = useRef(null);
+  if (!sessionLease.current) sessionLease.current = conversationSessionLease();
+  const mounted = useRef(true);
+  const currentSession = () => mounted.current && sessionLease.current();
+  // Guard every message update, including voice/restore/error callbacks.
+  const setMessages = value => { if (currentSession()) updateMessages(value); };
+  const [projectId, setProjectId] = useState(projectReference(route.params?.projectId));
   const [input, setInput] = useState('');
   const [imageMode, setImageMode] = useState(!!route.params?.imageMode);
   const [mode, setMode] = useState('fast'); // 'fast' | 'smart'
@@ -139,9 +150,15 @@ export default function ChatConversationScreen({ navigation, route }) {
   const [savingImage, setSavingImage] = useState(false);
   const [imageSaved, setImageSaved] = useState(false);
 
-  useEffect(() => () => {
-    stopSpeaking();
-    if (copiedTimerRef.current) clearTimeout(copiedTimerRef.current);
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+      dirtyRef.current = false;
+      abortRef.current?.abort();
+      stopSpeaking();
+      if (copiedTimerRef.current) clearTimeout(copiedTimerRef.current);
+    };
   }, []);
   useEffect(() => { setImageSaved(false); }, [viewerImage]);
   useEffect(() => {
@@ -188,6 +205,7 @@ export default function ChatConversationScreen({ navigation, route }) {
       if (!uri) throw new Error('No recording captured.');
       const b64 = await new File(uri).base64();
       const d = await api.aiTranscribe(b64, Platform.OS === 'web' ? 'audio/webm' : 'audio/mp4', token);
+      if (!currentSession()) return;
       if (d.configured === false) Alert.alert('Voice not set up yet', d.notice || 'Add the Gemini key in Railway to enable voice-to-text.');
       else if (d.error) Alert.alert('Could not transcribe', d.error);
       else if (d.text) { setTranscribing(false); send(d.text, true); return; }
@@ -271,17 +289,13 @@ export default function ChatConversationScreen({ navigation, route }) {
     if (!id) return;
     let active = true;
     setConvId(id);
+    setProjectId(projectReference(route.params?.projectId));
     const showConversation = c => {
-      if (!active || !c) return;
-      const restored = c.messages ? c.messages.map(m => ({
-        ...m,
-        content: typeof m.content === 'string' ? m.content : '',
-        // Web stores server-relative image URLs; React Native needs an absolute
-        // URL to show the saved image in the same conversation.
-        ...(m.image ? { image: absUrl(m.image) } : {}),
-      })) : [];
+      if (!active || !c || !currentSession()) return;
+      const restored = (c.messages || []).map(message => conversationMessage(message, config.API_BASE)).filter(Boolean);
+      setProjectId(projectReference(c.projectId));
       setMessages(restored);
-      setImageMode(!!route.params?.imageMode || restored.some(m => m.image));
+      setImageMode(!!route.params?.imageMode);
       setPinned(!!c.pinned);
       setReactions({});
     };
@@ -291,15 +305,15 @@ export default function ChatConversationScreen({ navigation, route }) {
       showConversation(await getCachedConversation(id));
       // Refresh silently so changes made on web or another phone still arrive.
       showConversation(await getConversation(id));
-    })();
+    })().catch(() => {});
     return () => { active = false; };
   }, [route.params?.conversationId]);
 
   // ---- conversation actions (top-right ⋯ menu) ----
   function resetChat() {
     const id = newId();
-    setConvId(id); setMessages([]); setPinned(false); setReactions({});
-    navigation.setParams({ conversationId: id, title: 'New Chat' });
+    setConvId(id); setMessages([]); setProjectId(null); setPinned(false); setReactions({});
+    navigation.setParams({ conversationId: id, title: 'New Chat', projectId: null });
   }
   function transcript() {
     return messages.map(m => (m.role === 'user' ? 'You: ' : 'OZIRA: ') + (typeof m.content === 'string' ? m.content : '[image]')).join('\n\n');
@@ -468,6 +482,7 @@ export default function ChatConversationScreen({ navigation, route }) {
   }
   // Live-voice overlay writes each spoken turn into the chat as text.
   function appendVoiceExchange(userText, aiText) {
+    if (!currentSession()) return;
     dirtyRef.current = true;
     setMessages(prev => [...prev, { role: 'user', content: userText }, { role: 'assistant', content: aiText, model: 'Voice' }]);
     scrollDown();
@@ -478,21 +493,22 @@ export default function ChatConversationScreen({ navigation, route }) {
 
   // Persist the conversation on-device after each settled exchange.
   useEffect(() => {
-    if (!dirtyRef.current) return;
+    if (!currentSession() || !dirtyRef.current) return;
     if (messages.some(m => m.pending)) return;
     dirtyRef.current = false;
     const firstUser = messages.find(m => m.role === 'user');
     const title = ((firstUser && typeof firstUser.content === 'string' ? firstUser.content : '') || 'New chat').slice(0, 40);
     saveConversation({
       id: convId,
-      title,
-      messages: messages.map(m => ({ role: m.role, content: typeof m.content === 'string' ? m.content : '', image: m.image || null, imageId: m.imageId || null, thumb: m.thumb || null, model: m.model || null, reaction: m.reaction || 0 })),
-    });
+      title, projectId,
+      messages: messages.map(message => conversationMessage(message, config.API_BASE)).filter(Boolean),
+    }).catch(() => {});
   }, [messages]);
 
   function scrollDown() { requestAnimationFrame(() => scrollRef.current?.scrollToEnd({ animated: true })); }
 
   async function send(overrideText, fromVoice, opts = {}) {
+    if (!currentSession()) return;
     const text = (typeof overrideText === 'string' ? overrideText : input).trim();
     const att = attachment;
     const useResearch = research || !!opts.forceResearch;
@@ -537,6 +553,7 @@ export default function ChatConversationScreen({ navigation, route }) {
               size: source.size || undefined,
             }, token, signal)
           : await api.image({ prompt: text }, token, signal);
+        if (!currentSession()) return;
         const img = d.images && d.images[0];
         setEditSource(null);
         setMessages([...next, img ? { role: 'assistant', image: absUrl(img.url), imageId: img.id || null } : { role: 'assistant', content: d.notice || 'No image returned.' }]);
@@ -545,6 +562,7 @@ export default function ChatConversationScreen({ navigation, route }) {
         else notify(t('notifFailed'), d.notice || '', 'warn');
       } else if (useResearch) {
         const d = await api.aiResearch(text, token, signal);
+        if (!currentSession()) return;
         const body = d.configured ? (d.text || d.error || 'No result.') : (d.notice || 'Research is not set up yet.');
         const src = (d.sources && d.sources.length) ? '\n\nSources:\n' + d.sources.slice(0, 5).join('\n') : '';
         setMessages([...next, { role: 'assistant', content: body + src, model: 'Research' }]);
@@ -557,27 +575,31 @@ export default function ChatConversationScreen({ navigation, route }) {
       } else if (visionImage) {
         const history = next.map((m, i) => ({ role: m.role, content: i === next.length - 1 ? (text || 'What is in this image?') : (typeof m.content === 'string' ? m.content : '') }));
         const d = await api.aiVision({ tier: mode, effort, skill, messages: history, images: [visionImage], lang }, token, signal);
+        if (!currentSession()) return;
         setMessages([...next, { role: 'assistant', content: d.reply || d.error || 'No reply.', model: d.modelLabel || 'Vision' }]);
       } else {
         let lastContent = text;
         if (att && att.kind === 'file' && att.text) {
           lastContent = 'Here is a file named "' + att.name + '":\n\n' + att.text.slice(0, 12000) + '\n\n' + (text || 'Please read this and help me.');
         }
-        const msgs = next.map((m, i) => ({ role: m.role, content: i === next.length - 1 ? lastContent : (typeof m.content === 'string' ? m.content : '') }));
+        const msgs = requestMessages(next.map((m, i) => i === next.length - 1 ? { ...m, content: lastContent } : m), config.API_BASE);
         // Response style (profile.customInstructions) and unified memories are
         // injected server-side from the account, so no client system message.
-        const payload = { model: 'auto', tier: mode, effort, skill, messages: msgs, lang };
+        const payload = { model: 'auto', tier: mode, effort, skill, messages: msgs, lang, projectId, conversationId: convId };
         const d = await api.chat(payload, token, signal);
-        setMessages([...next, { role: 'assistant', content: d.reply, model: d.modelLabel }]);
+        if (!currentSession()) return;
+        setMessages([...next, assistantMessage(d, config.API_BASE)]);
         if (fromVoice && d.reply) {
           const spoken = await speakText(d.reply, token);
           if (!spoken?.ok) notify(t('notifFailed'), spoken?.message || 'Could not play the spoken reply.', 'error');
         }
       }
     } catch (e) {
+      if (!currentSession()) return;
       if (e.name === 'AbortError') setMessages(next);
       else { setMessages([...next, { role: 'assistant', content: 'Error: ' + e.message }]); notify(t('notifFailed'), e.message, 'error'); }
     }
+    if (!currentSession()) return;
     abortRef.current = null;
     setBusy(false);
     scrollDown();
@@ -678,6 +700,7 @@ export default function ChatConversationScreen({ navigation, route }) {
             {m.image ? (
               <Pressable onPress={() => setViewerImage({ url: m.image, id: m.imageId, prompt: m.content, index: i })} accessibilityRole="button" accessibilityLabel="Open generated image">
                 <Image source={{ uri: m.image }} style={styles.image} resizeMode="cover" />
+                {m.content ? <Markdown text={m.content} colors={colors} style={[styles.msgTxt, rtlText(rtl)]} /> : null}
               </Pressable>
             ) : m.pending ? (
               <View style={styles.thinkingRow} accessibilityLabel={t('vThinking')}>
@@ -691,6 +714,8 @@ export default function ChatConversationScreen({ navigation, route }) {
             ) : (
               <Text style={[styles.msgTxt, rtlText(rtl), { color: colors.text }]}>{m.content}</Text>
             )}
+            {!m.pending && m.role === 'assistant' && m.metadata?.webBuild ? <WebsiteArtifact artifact={m.metadata.webBuild} colors={colors} /> : null}
+            {!m.pending && m.role === 'assistant' && m.metadata?.document ? <DocumentArtifact artifact={m.metadata.document} colors={colors} /> : null}
             {!m.pending && m.content ? (
               <View style={[styles.actionRow, m.role === 'assistant' && styles.assistantActionRow]}>
                 {m.role === 'assistant' ? (
