@@ -5,6 +5,7 @@
 import React from 'react';
 import { View, Text, Linking, Platform } from 'react-native';
 import { fonts } from '../theme';
+import { numberedLines } from '../markdownLines';
 
 // 'monospace' is Android-only; iOS needs a real font name.
 const MONO = { fontFamily: Platform.select({ ios: 'Menlo', default: 'monospace' }) };
@@ -36,7 +37,7 @@ function inlineParts(line, colors, baseStyle) {
 }
 
 export default function Markdown({ text, colors, style }) {
-  const src = typeof text === 'string' ? text : '';
+  const src = numberedLines(typeof text === 'string' ? text : '');
   // pull fenced code blocks out first so their content is never styled
   const chunks = src.split(/```\w*\n?/);
   const nodes = [];
