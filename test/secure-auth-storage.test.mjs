@@ -26,41 +26,77 @@ function secureStoreDouble(events = [], failSet = () => false) {
   };
 }
 
-test('native session restore retires only the exact legacy key before reading the committed secure value', async () => {
+test('native session restore migrates only the exact legacy key and removes it after secure commit', async () => {
   const events = [];
-  let releaseRemoval;
   const legacySessionKey = 'sb-gdydxlmidnshluvpynml-auth-token';
   const secure = secureStoreDouble(events);
+  const legacyValues = new Map([[legacySessionKey, 'legacy-session']]);
   const storage = createStorage({
-    asyncStorage: { removeItem: key => { events.push(['legacy-remove', key]); return new Promise(resolve => { releaseRemoval = resolve; }); } },
+    asyncStorage: {
+      async getItem(key) { events.push(['legacy-read', key]); return legacyValues.get(key) ?? null; },
+      async removeItem(key) { events.push(['legacy-remove', key]); legacyValues.delete(key); },
+    },
     secureStore: secure,
     legacySessionKey,
   });
-  await storage.setItem(legacySessionKey, 'secure-session');
-  events.length = 0;
 
   const first = storage.getItem(legacySessionKey);
   const second = storage.getItem(legacySessionKey);
-  await Promise.resolve();
-  assert.deepEqual(events, [['legacy-remove', legacySessionKey]]);
-  releaseRemoval();
-  assert.deepEqual(await Promise.all([first, second]), ['secure-session', 'secure-session']);
+  assert.deepEqual(await Promise.all([first, second]), ['legacy-session', 'legacy-session']);
+  const manifest = JSON.parse(secure.values.get(`${legacySessionKey}::ozira-secure-manifest`));
+  assert.equal(secure.values.get(`${legacySessionKey}::ozira-secure::${manifest.generation}::0`), 'legacy-session');
+  assert.ok(events.findIndex(event => event[0] === 'secure-write' && event[1].endsWith('::ozira-secure-manifest'))
+    < events.findIndex(event => event[0] === 'legacy-remove'));
+  assert.equal(legacyValues.has(legacySessionKey), false);
   assert.equal(events.filter(event => event[0] === 'legacy-remove').length, 1);
 });
 
-test('legacy cleanup failure blocks session restore and never falls back to AsyncStorage', async () => {
-  let secureReads = 0;
+test('failed secure migration preserves the legacy session and succeeds safely on retry', async () => {
+  const legacySessionKey = 'sb-project-auth-token';
+  const legacyValues = new Map([[legacySessionKey, 'legacy-session']]);
+  let failSet = true;
+  const secure = secureStoreDouble([], key => key.includes('::ozira-secure::') && failSet);
   const storage = createStorage({
-    asyncStorage: { async removeItem() { throw new Error('legacy store unavailable'); } },
-    secureStore: {
-      async getItemAsync() { secureReads += 1; return null; },
-      async setItemAsync() {},
-      async deleteItemAsync() {},
+    asyncStorage: {
+      async getItem(key) { return legacyValues.get(key) ?? null; },
+      async removeItem(key) { legacyValues.delete(key); },
     },
+    secureStore: secure,
+    legacySessionKey,
   });
 
-  await assert.rejects(storage.getItem('sb-project-auth-token'), /legacy store unavailable/);
-  assert.equal(secureReads, 0);
+  await assert.rejects(storage.getItem(legacySessionKey), /secure write failed/);
+  assert.equal(legacyValues.get(legacySessionKey), 'legacy-session');
+  assert.equal(secure.values.has(`${legacySessionKey}::ozira-secure-manifest`), false);
+  failSet = false;
+  assert.equal(await storage.getItem(legacySessionKey), 'legacy-session');
+  assert.equal(legacyValues.has(legacySessionKey), false);
+});
+
+test('logout tombstone prevents legacy session resurrection when cleanup fails', async () => {
+  const legacySessionKey = 'sb-project-auth-token';
+  const legacyValues = new Map([[legacySessionKey, 'pre-logout-session']]);
+  let failRemove = true;
+  const secure = secureStoreDouble();
+  const storage = createStorage({
+    asyncStorage: {
+      async getItem(key) { return legacyValues.get(key) ?? null; },
+      async removeItem(key) {
+        if (failRemove) throw new Error('legacy cleanup failed');
+        legacyValues.delete(key);
+      },
+    },
+    secureStore: secure,
+    legacySessionKey,
+  });
+
+  await assert.rejects(storage.removeItem(legacySessionKey), /legacy cleanup failed/);
+  assert.equal(secure.values.get(`${legacySessionKey}::ozira-secure-logout`), '1');
+  await assert.rejects(storage.getItem(legacySessionKey), /legacy cleanup failed/);
+  assert.equal(secure.values.has(`${legacySessionKey}::ozira-secure-manifest`), false);
+  failRemove = false;
+  assert.equal(await storage.getItem(legacySessionKey), null);
+  assert.equal(legacyValues.has(legacySessionKey), false);
 });
 
 test('unrelated storage keys never trigger legacy AsyncStorage deletion', async () => {
@@ -75,7 +111,7 @@ test('unrelated storage keys never trigger legacy AsyncStorage deletion', async 
   assert.deepEqual(events, [['secure-read', 'ozira-conversation-cache::ozira-secure-manifest']]);
 });
 
-test('session writes and logout deletion stay in SecureStore and remove the committed generation', async () => {
+test('session writes and logout deletion stay in SecureStore and leave a no-resurrection tombstone', async () => {
   const events = [];
   const secure = secureStoreDouble(events);
   const legacySessionKey = 'sb-project-auth-token';
@@ -87,7 +123,8 @@ test('session writes and logout deletion stay in SecureStore and remove the comm
 
   await storage.setItem(legacySessionKey, 'new-session');
   await storage.removeItem(legacySessionKey);
-  assert.equal(secure.values.size, 0);
+  assert.equal(secure.values.size, 1);
+  assert.equal(secure.values.get(`${legacySessionKey}::ozira-secure-logout`), '1');
   assert.ok(events.some(event => event[0] === 'secure-write' && event[1].includes('::ozira-secure::')));
   assert.ok(events.some(event => event[0] === 'secure-delete' && event[1].endsWith('::ozira-secure-manifest')));
   assert.deepEqual(events.filter(event => event[0] === 'legacy-remove'), [['legacy-remove', legacySessionKey]]);
