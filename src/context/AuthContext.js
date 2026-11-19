@@ -17,10 +17,12 @@ export function AuthProvider({ children }) {
   const [ownerId, setOwnerId] = useState(null);
 
   // Load the profile row for the signed-in user.
-  async function loadProfile(session) {
+  async function loadProfile(session, expectedRevision = null) {
     if (!session) { setUser(null); return; }
     const authUser = session.user;
-    const current = () => activeOwner.current === authUser.id;
+    const current = () => activeOwner.current === authUser.id
+      && (expectedRevision === null || authRevision.current === expectedRevision);
+    if (!current()) return;
     let profile = {};
     try {
       const { data } = await supabase
@@ -61,19 +63,38 @@ export function AuthProvider({ children }) {
         const revision = authRevision.current;
         const { data: { session } } = await supabase.auth.getSession();
         if (revision !== authRevision.current) return;
-        if (session) { if (activeOwner.current !== session.user.id) setUser(null); setOwnerId(session.user.id); activeOwner.current = session.user.id; setConversationOwner(session.user.id); setToken(session.access_token); setTok(session.access_token); loadProfile(session); }
+        if (session) { if (activeOwner.current !== session.user.id) setUser(null); setOwnerId(session.user.id); activeOwner.current = session.user.id; setConversationOwner(session.user.id); setToken(session.access_token); setTok(session.access_token); loadProfile(session, revision); }
       } catch (_) {}
       setLoading(false);
     })();
 
     // 2) React to sign-in / sign-out / token-refresh.
-    const { data: sub } = supabase.auth.onAuthStateChange(async (_event, session) => {
-      authRevision.current += 1;
+    const { data: sub } = supabase.auth.onAuthStateChange((_event, session) => {
+      const revision = ++authRevision.current;
       setLoading(false);
-      if (session) { if (activeOwner.current !== session.user.id) setUser(null); setOwnerId(session.user.id); activeOwner.current = session.user.id; setConversationOwner(session.user.id); setToken(session.access_token); setTok(session.access_token); await loadProfile(session); }
+      if (session) {
+        if (activeOwner.current !== session.user.id) setUser(null);
+        setOwnerId(session.user.id);
+        activeOwner.current = session.user.id;
+        setConversationOwner(session.user.id);
+        setToken(session.access_token);
+        setTok(session.access_token);
+        // Supabase invokes this callback while coordinating auth state. Defer
+        // profile queries/API work until the callback has returned so nested
+        // Supabase calls cannot contend with the auth lock. Ignore stale
+        // events if a later auth transition wins before this task runs.
+        setTimeout(() => {
+          if (revision === authRevision.current && activeOwner.current === session.user.id) {
+            void loadProfile(session, revision);
+          }
+        }, 0);
+      }
       else { setOwnerId(null); activeOwner.current = null; setConversationOwner(null); setToken(null); setTok(null); setUser(null); }
     });
-    return () => sub.subscription.unsubscribe();
+    return () => {
+      authRevision.current += 1;
+      sub.subscription.unsubscribe();
+    };
   }, []);
 
   const signIn = async (email, password) => {
@@ -108,8 +129,10 @@ export function AuthProvider({ children }) {
 
   // Re-fetch the profile row (after edits on the Profile screen, etc.)
   const refresh = async () => {
+    const revision = authRevision.current;
     const { data: { session } } = await supabase.auth.getSession();
-    await loadProfile(session);
+    if (revision !== authRevision.current) return;
+    await loadProfile(session, revision);
   };
 
   // Update the shared account profile used by mobile and web.

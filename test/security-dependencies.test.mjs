@@ -110,12 +110,14 @@ test('Gate3 glob cancellation stops traversal and Expo glob consumers preserve n
  const dir=await mkdtemp(join(tmpdir(),'ozira-glob-'));
  try {
   await require('node:fs/promises').mkdir(join(dir,'ios','Bakery'),{recursive:true});await writeFile(join(dir,'ios','Bakery','AppDelegate.swift'),'fixture');
-  assert.deepEqual(glob.globSync('ios/*/AppDelegate.@(m|mm|swift)',{cwd:dir}),['ios/Bakery/AppDelegate.swift']);
+  assert.deepEqual(glob.globSync('ios/*/AppDelegate.@(m|mm|swift)',{cwd:dir}).map(path=>path.replace(/\\/g,'/')),['ios/Bakery/AppDelegate.swift']);
   const controller=new AbortController();let reads=0;
   const instrumented={...fs,readdir(path,options,callback){reads++;fs.readdir(path,options,(error,entries)=>{controller.abort(Error('fixture-abort'));callback(error,entries);});}};
   await assert.rejects(glob.glob('**/*',{cwd:dir,signal:controller.signal,fs:instrumented}),/fixture-abort/);
   for(let tick=0;tick<5;tick++)await new Promise(resolve=>setImmediate(resolve));assert.equal(reads,1,'aborted traversal must not descend into child directories');
-  const config=require('@expo/config').getConfig(process.cwd(),{skipSDKVersionRequirement:true,skipPlugins:true});assert.equal(config.exp.name,'OZIRA AI');
+  const previousEnvironment=process.env.EXPO_PUBLIC_OZIRA_ENV;process.env.EXPO_PUBLIC_OZIRA_ENV='staging';
+  try {const config=require('@expo/config').getConfig(process.cwd(),{skipSDKVersionRequirement:true,skipPlugins:true});assert.equal(config.exp.name,'OZIRA AI Staging');}
+  finally {if(previousEnvironment===undefined)delete process.env.EXPO_PUBLIC_OZIRA_ENV;else process.env.EXPO_PUBLIC_OZIRA_ENV=previousEnvironment;}
  }finally{await rm(dir,{recursive:true,force:true});}
 });
 test('Gate3 minimatch branches preserve CLI matching and bound optimization amplification',()=>{
