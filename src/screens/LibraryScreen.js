@@ -7,11 +7,13 @@ import { useColors } from '../context/ThemeContext';
 import FlagMenu from '../components/FlagMenu';
 import { useAuth } from '../context/AuthContext';
 import { useUI } from '../context/UIContext';
-import { api, absUrl } from '../api';
+import { api, absUrl, generatedImageSource, downloadGeneratedImage } from '../api';
 import { useLang } from '../context/LanguageContext';
 import { useNotify } from '../context/NotifyContext';
 import { File, Paths } from 'expo-file-system';
 import * as MediaLibrary from 'expo-media-library';
+import { shareArtifactFile } from '../artifactFiles';
+import { conversationSessionLease } from '../localStore';
 
 const GAP = 10;
 const COL_W = (Dimensions.get('window').width - 32 - GAP) / 2;
@@ -60,13 +62,14 @@ export default function LibraryScreen({ navigation }) {
     setSaving(true);
     try {
       const uri = absUrl(image.url);
-      const clean = uri.split('?')[0].toLowerCase();
-      const ext = clean.endsWith('.webp') ? 'webp'
-        : clean.endsWith('.gif') ? 'gif'
-          : (clean.endsWith('.jpg') || clean.endsWith('.jpeg')) ? 'jpg' : 'png';
-      const target = new File(Paths.cache, `ozira-library-${Date.now()}.${ext}`);
-      const downloaded = await File.downloadFileAsync(uri, target, { idempotent: true });
-      await MediaLibrary.saveToLibraryAsync(downloaded.uri);
+      const current = conversationSessionLease();
+      const downloaded = await downloadGeneratedImage(uri, token);
+      if (!current()) return;
+      const target = new File(Paths.cache, `${Date.now()}-${downloaded.fileName}`);
+      target.create(); target.write(downloaded.bytes);
+      try { await MediaLibrary.saveToLibraryAsync(target.uri); }
+      finally { try { target.delete(); } catch (_) {} }
+      if (!current()) return;
       notify(t('savedToPhotos'), '', 'success');
     } catch (e) {
       Alert.alert(t('saveImage'), e.message || t('notifFailed'));
@@ -78,8 +81,9 @@ export default function LibraryScreen({ navigation }) {
   async function shareImage(image) {
     if (!image) return;
     try {
-      const uri = absUrl(image.url);
-      await Share.share({ message: uri, url: uri, title: 'OZIRA AI image' });
+      const current = conversationSessionLease();
+      const downloaded = await downloadGeneratedImage(image.url, token);
+      if (current()) await shareArtifactFile(downloaded.fileName, downloaded.bytes, downloaded.mimeType, current);
     } catch (_) {}
   }
 
@@ -139,7 +143,7 @@ export default function LibraryScreen({ navigation }) {
             <View style={styles.grid}>
               {images.map(img => (
                 <Pressable key={img.id} style={styles.cell} onPress={() => setViewer(img)} accessibilityRole="button" accessibilityLabel="Open saved image">
-                  <Image source={{ uri: absUrl(img.url) }} style={styles.img} resizeMode="cover" />
+                  <Image source={generatedImageSource(img.url, token)} style={styles.img} resizeMode="cover" />
                   {img.prompt ? <Text style={styles.caption} numberOfLines={2}>{img.prompt}</Text> : null}
                 </Pressable>
               ))}
@@ -160,7 +164,7 @@ export default function LibraryScreen({ navigation }) {
             </Pressable>
           </View>
           <View style={styles.viewerBody}>
-            {!!viewer && <Image source={{ uri: absUrl(viewer.url) }} style={styles.viewerImage} resizeMode="contain" />}
+            {!!viewer && <Image source={generatedImageSource(viewer.url, token)} style={styles.viewerImage} resizeMode="contain" />}
             <View style={[styles.viewerTools, { bottom: Math.max(insets.bottom + 28, 62) }]}>
               <Pressable style={styles.viewerTool} onPress={() => openInEditor(viewer, t('editImagePrompt'))}><Ionicons name="pencil-outline" size={14} color="#FFFFFF" /><Text style={styles.viewerToolTxt}>{t('editImage')}</Text></Pressable>
               <Pressable style={styles.viewerTool} onPress={() => openInEditor(viewer)}><Ionicons name="chatbubble-ellipses-outline" size={14} color="#FFFFFF" /><Text style={styles.viewerToolTxt}>{t('commentImage')}</Text></Pressable>

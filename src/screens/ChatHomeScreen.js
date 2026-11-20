@@ -108,7 +108,7 @@ export default function ChatHomeScreen({ navigation }) {
         {recent.length === 0 ? (
           <Text style={styles.empty}>No chats yet. Tap a card above to start.</Text>
         ) : recent.map(c => (
-          <Pressable key={c.id} style={styles.recent} onPress={() => navigation.navigate('ChatConversation', { conversationId: c.id, title: c.title })}>
+          <Pressable key={c.id} style={styles.recent} onPress={() => navigation.navigate('ChatConversation', { conversationId: c.id, title: c.title, projectId: c.projectId || null })}>
             <Ionicons name="chatbubble-ellipses-outline" size={18} color={colors.muted} />
             <Text style={styles.recentTxt} numberOfLines={1}>{c.title}</Text>
           </Pressable>

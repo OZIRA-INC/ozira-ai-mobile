@@ -95,7 +95,7 @@ export default function Sidebar() {
 
   function go(route, params) { navigate(route, params); closeSidebar(); }
   function newChat() { go('ChatConversation', { conversationId: newId(), title: 'New Chat' }); }
-  function openChat(c) { go('ChatConversation', { conversationId: c.id, title: c.title }); }
+  function openChat(c) { go('ChatConversation', { conversationId: c.id, title: c.title, projectId: c.projectId || null }); }
 
   async function addFolder() {
     const n = folderName.trim();

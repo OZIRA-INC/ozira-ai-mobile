@@ -7,16 +7,26 @@
     "development": {
       "developmentClient": true,
       "distribution": "internal",
+      "environment": "preview",
+      "env": { "EXPO_PUBLIC_OZIRA_ENV": "staging" },
       "android": {
         "buildType": "apk"
       }
     },
     "preview": {
       "distribution": "internal",
+      "environment": "preview",
+      "env": { "EXPO_PUBLIC_OZIRA_ENV": "staging" },
       "android": {
         "buildType": "apk"
       }
     },
-    "production": {}
+    "staging": {
+      "extends": "preview"
+    },
+    "production": {
+      "environment": "production",
+      "env": { "EXPO_PUBLIC_OZIRA_ENV": "production" }
+    }
   }
 }
