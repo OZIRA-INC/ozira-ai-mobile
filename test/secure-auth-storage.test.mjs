@@ -12,7 +12,7 @@ function createStorage({ secureStore, asyncStorage, legacySessionKey = 'sb-proje
   return new Function('SecureStore', 'AsyncStorage', 'legacySessionKey', `${executable}\nreturn createSecureAuthStorage(legacySessionKey);`)(secureStore, asyncStorage, legacySessionKey);
 }
 
-function secureStoreDouble(events = [], failSet = () => false) {
+function secureStoreDouble(events = [], failSet = () => false, failDelete = () => false) {
   const values = new Map();
   return {
     values,
@@ -22,7 +22,11 @@ function secureStoreDouble(events = [], failSet = () => false) {
       if (failSet(key, value)) throw new Error('secure write failed');
       values.set(key, value);
     },
-    async deleteItemAsync(key) { events.push(['secure-delete', key]); values.delete(key); },
+    async deleteItemAsync(key) {
+      events.push(['secure-delete', key]);
+      if (failDelete(key)) throw new Error('secure delete failed');
+      values.delete(key);
+    },
   };
 }
 
@@ -97,6 +101,54 @@ test('logout tombstone prevents legacy session resurrection when cleanup fails',
   failRemove = false;
   assert.equal(await storage.getItem(legacySessionKey), null);
   assert.equal(legacyValues.has(legacySessionKey), false);
+});
+
+test('logout tombstone blocks the prior SecureStore session when manifest deletion fails', async () => {
+  const legacySessionKey = 'sb-project-auth-token';
+  let failManifestDelete = true;
+  const secure = secureStoreDouble([], () => false, key =>
+    failManifestDelete && key === `${legacySessionKey}::ozira-secure-manifest`);
+  const storage = createStorage({
+    asyncStorage: { async removeItem() {} },
+    secureStore: secure,
+    legacySessionKey,
+  });
+
+  await storage.setItem(legacySessionKey, 'pre-logout-session');
+  await assert.rejects(storage.removeItem(legacySessionKey), /secure delete failed/);
+  assert.equal(secure.values.get(`${legacySessionKey}::ozira-secure-logout`), '1');
+  assert.ok(secure.values.has(`${legacySessionKey}::ozira-secure-manifest`));
+  await assert.rejects(storage.getItem(legacySessionKey), /secure delete failed/);
+
+  failManifestDelete = false;
+  assert.equal(await storage.getItem(legacySessionKey), null);
+  assert.equal(secure.values.has(`${legacySessionKey}::ozira-secure-manifest`), false);
+});
+
+test('failed new session write after logout cleanup cannot restore the previous session', async () => {
+  const legacySessionKey = 'sb-project-auth-token';
+  let failManifestDelete = true;
+  let failChunkWrite = false;
+  const secure = secureStoreDouble(
+    [],
+    key => failChunkWrite && key.includes('::ozira-secure::'),
+    key => failManifestDelete && key === `${legacySessionKey}::ozira-secure-manifest`,
+  );
+  const storage = createStorage({
+    asyncStorage: { async getItem() { return null; }, async removeItem() {} },
+    secureStore: secure,
+    legacySessionKey,
+  });
+
+  await storage.setItem(legacySessionKey, 'pre-logout-session');
+  await assert.rejects(storage.removeItem(legacySessionKey), /secure delete failed/);
+  failManifestDelete = false;
+  failChunkWrite = true;
+  await assert.rejects(storage.setItem(legacySessionKey, 'new-session'), /secure write failed/);
+  failChunkWrite = false;
+
+  assert.equal(await storage.getItem(legacySessionKey), null);
+  assert.equal(secure.values.has(`${legacySessionKey}::ozira-secure-manifest`), false);
 });
 
 test('unrelated storage keys never trigger legacy AsyncStorage deletion', async () => {

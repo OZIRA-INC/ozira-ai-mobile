@@ -49,6 +49,15 @@ function createSecureAuthStorage(legacySessionKey) {
     return `${key}::ozira-secure::${generation}::${index}`;
   }
 
+  async function clearSessionUnderLogout(key) {
+    const pointer = manifestKey(key);
+    const previous = parseManifest(await SecureStore.getItemAsync(pointer));
+    // The tombstone is authoritative until an explicit new session write.
+    await SecureStore.deleteItemAsync(pointer);
+    if (key === legacySessionKey) await AsyncStorage.removeItem(key);
+    if (previous) await removeGeneration(key, previous).catch(() => {});
+  }
+
   function parseManifest(value) {
     if (typeof value !== 'string') return null;
     try {
@@ -70,16 +79,17 @@ function createSecureAuthStorage(legacySessionKey) {
     if (!migration) {
       migration = enqueueWrite(key, async () => {
         const pointer = manifestKey(key);
+        // Check logout before any old committed generation. If cleanup failed
+        // after tombstoning, the prior manifest must never restore that session.
+        if (await SecureStore.getItemAsync(logoutTombstoneKey(key)) !== null) {
+          await clearSessionUnderLogout(key);
+          return;
+        }
+
         const rawManifest = await SecureStore.getItemAsync(pointer);
         if (rawManifest !== null) {
           if (!parseManifest(rawManifest)) throw new Error('Stored auth session metadata is invalid.');
           // A committed SecureStore generation wins over a stale legacy copy.
-          await AsyncStorage.removeItem(key);
-          return;
-        }
-
-        // A logout tombstone prevents failed cleanup from restoring an old session.
-        if (await SecureStore.getItemAsync(logoutTombstoneKey(key)) !== null) {
           await AsyncStorage.removeItem(key);
           return;
         }
@@ -124,6 +134,13 @@ function createSecureAuthStorage(legacySessionKey) {
     if (chunks.length > MAX_CHUNKS) throw new Error('Auth session exceeds secure storage capacity.');
 
     const pointer = manifestKey(key);
+    const tombstone = logoutTombstoneKey(key);
+    if (await SecureStore.getItemAsync(tombstone) !== null) {
+      // A new session may supersede logout only after all old copies are
+      // unlinked. If tombstone removal or the new write fails, old auth stays gone.
+      await clearSessionUnderLogout(key);
+      await SecureStore.deleteItemAsync(tombstone);
+    }
     const previous = parseManifest(await SecureStore.getItemAsync(pointer));
     const generation = `${Date.now().toString(36)}-${(++generationCounter).toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
     try {
@@ -136,10 +153,6 @@ function createSecureAuthStorage(legacySessionKey) {
       await removeGeneration(key, { generation, count: chunks.length }).catch(() => {});
       throw error;
     }
-
-    // A committed new session supersedes a logout tombstone. The manifest
-    // remains authoritative if tombstone cleanup itself fails.
-    await SecureStore.deleteItemAsync(logoutTombstoneKey(key)).catch(() => {});
 
     if (previous && previous.generation !== generation) await removeGeneration(key, previous);
   }
